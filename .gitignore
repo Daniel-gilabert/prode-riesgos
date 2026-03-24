@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+users_db.json
+audit_log.json
+active_sessions.json
+errors.log
+startup.txt

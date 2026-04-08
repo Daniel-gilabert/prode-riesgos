@@ -10,6 +10,11 @@ from supabase import create_client
 
 st.set_page_config(page_title="PRODE - Login", layout="centered")
 
+# Configuración de datos (puede cambiarse por variables de entorno)
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "supabase")  # "supabase" o "sharepoint"
+SHAREPOINT_EMPLEADOS_URL = os.environ.get("SHAREPOINT_EMPLEADOS_URL", "")
+SHAREPOINT_FICHAJES_URL = os.environ.get("SHAREPOINT_FICHAJES_URL", "")
+
 DB_FILE = "users_db.json"
 
 def hash_password(password):

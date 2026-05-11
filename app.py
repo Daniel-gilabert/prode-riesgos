@@ -107,13 +107,47 @@ try:
 except:
     supabase = None
 
-def get_empleados():
+# Design mode toggle (no new roles, isolated UI for designer)
+DESIGN_MODE = os.environ.get("DESIGN_MODE", "false").lower() in ("true", "1", "yes")
+
+def _load_local_empleados():
+    import json
+    local_path = os.path.join(os.path.dirname(__file__), "data", "empleados_local.json")
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # Fallback demo data si no existe el fichero local
+    return [
+        {"id": "1", "apellidos_y_nombre": "Perez Garcia Juan", "nombre_normalizado": "perez garcia juan", "email": "juan.perez@example.com", "jornada_semanal": 38.0, "departamento": "RRHH", "rol": "empleado", "activo": true},
+        {"id": "2", "apellidos_y_nombre": "Lopez Martinez Ana", "nombre_normalizado": "lopez martinez ana", "email": "ana.lopez@example.com", "jornada_semanal": 38.0, "departamento": "Desempeño", "rol": "empleado", "activo": true}
+    ]
+
+def _load_local_fichajes():
+    from datetime import datetime
+    return [
+        {"Empleado": "Juan Perez", "Fecha": datetime(2026,4,1,9,0), "Asistió": True, "Anulada": False},
+        {"Empleado": "Ana Lopez", "Fecha": datetime(2026,4,1,9,15), "Asistió": False, "Anulada": False},
+        {"Empleado": "Carlos Diaz", "Fecha": datetime(2026,4,1,10,0), "Asistió": True, "Anulada": False}
+    ]
+
+def load_fichajes():
     if not supabase:
-        return []
+        return _load_local_fichajes()
+    try:
+        rows = supabase.table("fichajes").select("*").execute().data
+        if rows:
+            return rows
+        return _load_local_fichajes()
+    except Exception:
+        return _load_local_fichajes()
+def get_empleados():
+    # Preferir Supabase si disponible; fallback a datos locales si no hay conexión
+    if not supabase:
+        return _load_local_empleados()
     try:
         return supabase.table("empleados").select("*").execute().data
-    except:
-        return []
+    except Exception:
+        return _load_local_empleados()
 
 def get_inicio_stats():
     empleados = get_empleados()
@@ -121,6 +155,49 @@ def get_inicio_stats():
     activos = len([e for e in empleados if e.get("activo", True)])
     deptos = len(set(e.get("departamento", "") for e in empleados if e.get("departamento")))
     return total, activos, deptos
+
+# WorkTime external integration (fallback enabled)
+WORKTIME_USE_EXTERNAL = os.environ.get("WORKTIME_USE_EXTERNAL", "false").lower() in ("true", "1", "yes")
+WORKTIME_EXTERNAL_URL = os.environ.get("WORKTIME_EXTERNAL_URL", "https://worktime-asisten.streamlit.app")
+
+# Auto-enable external WorkTime if the known URL is used (ease of deployment)
+try:
+    if WORKTIME_EXTERNAL_URL.strip().rstrip("/") == "https://worktime-asisten.streamlit.app":
+        WORKTIME_USE_EXTERNAL = True
+except Exception:
+    pass
+
+def _load_local_fichajes():
+    from datetime import datetime
+    return [
+        {"Empleado": "Juan Perez", "Fecha": datetime(2026,4,1,9,0).strftime("%Y-%m-%d %H:%M"), "Asistió": True, "Anulada": False},
+        {"Empleado": "Ana Lopez", "Fecha": datetime(2026,4,1,9,15).strftime("%Y-%m-%d %H:%M"), "Asistió": False, "Anulada": False},
+        {"Empleado": "Carlos Diaz", "Fecha": datetime(2026,4,1,10,0).strftime("%Y-%m-%d %H:%M"), "Asistió": True, "Anulada": False}
+    ]
+
+def check_worktime_health(url):
+    try:
+        import httpx
+        resp = httpx.get(url, timeout=5)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+def get_worktime_data():
+    # Prefer external if enabled and health check passes
+    if WORKTIME_USE_EXTERNAL and WORKTIME_EXTERNAL_URL:
+        if check_worktime_health(WORKTIME_EXTERNAL_URL):
+            try:
+                import httpx
+                resp = httpx.get(WORKTIME_EXTERNAL_URL.rstrip('/') + "/api/fichajes", timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list):
+                        return data
+            except Exception:
+                pass
+    # Fallback local data
+    return _load_local_fichajes()
 
 def login_page():
     AUDIT_FILE = "audit_log.json"
@@ -205,7 +282,7 @@ def main():
     if not st.session_state["authenticated"]:
         login_page()
         return
-    
+
     user = st.session_state["user"]
     role = st.session_state["role"]
     custom_modules = st.session_state.get("custom_modules", [])
@@ -215,6 +292,11 @@ def main():
     else:
         rol_info = ROLES.get(role, {})
         menus = rol_info.get("menus", ["Inicio"])
+
+    # Design Mode: limit menus and show design banner
+    if DESIGN_MODE:
+        allowed = ["Inicio", "Riesgos de Capital Humano", "Control Horario", "Métricas de Riesgos"]
+        menus = [m for m in menus if m in allowed]
     
     rol_info = ROLES.get(role, {})
     
@@ -364,6 +446,18 @@ def main():
         col_btn, col_est = st.columns([3, 1])
         with col_btn: st.link_button("🚀 ABRIR MÓDULO", "https://worktime-asisten.streamlit.app")
         with col_est: st.success("🟢 Activo")
+        # Mostrar fichajes (fallback local si no hay conexión a BC / Supabase)
+        fichajes = load_fichajes() if 'load_fichajes' in globals() else _load_local_fichajes()
+        if fichajes:
+            df_f = pd.DataFrame(fichajes)
+            if 'Fecha' in df_f.columns:
+                df_f['Fecha'] = pd.to_datetime(df_f['Fecha']).dt.strftime('%d/%m/%Y %H:%M')
+            try:
+                st.markdown("---")
+                st.subheader("Últimos fichajes (fallback)" )
+                st.dataframe(df_f[["Empleado","Fecha","Asistió","Anulada"]].head(5), use_container_width=True, hide_index=True)
+            except Exception:
+                pass
     
     elif menu == "Riesgo Financiero":
         st.markdown("### 💰 Riesgo Financiero")
